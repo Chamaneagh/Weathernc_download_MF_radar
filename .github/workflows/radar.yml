@@ -1,8 +1,6 @@
 name: NC radar -> Supabase
 
 on:
-  schedule:
-    - cron: '*/10 19-23,0-6 * * *'
   workflow_dispatch: {}
 
 concurrency:
