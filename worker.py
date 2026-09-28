@@ -131,8 +131,7 @@ def process(src: dict):
         os.remove(bufr)
 
     dbz = mf_radar.despeckle(r["dbz"], min_neighbors=2)
-    rgba, bbox = make_overlay(dbz, r["corner_lat"], r["corner_lon"], *r["pixel_m"])
-
+    rgba, bbox = mf_radar.make_overlay(r, dbz)
     obs = r["observed_at"]
     key = f"{src['key'].lower()}/{obs:%Y/%m/%d}/{obs:%H%M}.png"
 

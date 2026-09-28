@@ -124,10 +124,12 @@ def decode_file(path, tables_dir=None):
         corner_lat = lat0 + first(dN_key) / M
         corner_lon = lon0 - first(dW_key) / (M * np.cos(np.radians(lat0)))
         radars = [(lat0, lon0)]
+        offsets_m = (first(dN_key), first(dW_key))
     else:
         # Mosaïque : premier point = coin NW, les suivants = radars
         corner_lat, corner_lon = lats[0], lons[0]
         radars = list(zip(lats[1:], lons[1:]))
+        offsets_m = None
 
     return dict(
         observed_at = obs,
@@ -141,6 +143,7 @@ def decode_file(path, tables_dir=None):
         central_lon = first("Longitude du meridien parallele a l'axe des Y"),
         scan_mode   = first('Mode de balayage'),
         radars      = radars,
+        offsets_m   = offsets_m,   # (dN, dW) en m pour une station, None pour la mosaïque
         codes       = grid_codes,
         dbz         = dbz,
     )
@@ -161,3 +164,93 @@ def despeckle(dbz, min_neighbors=2):
     out = dbz.copy()
     out[mask & (nb < min_neighbors)] = np.nan
     return out
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  GÉORÉFÉRENCEMENT  →  image prête pour Leaflet (Web Mercator)
+# ════════════════════════════════════════════════════════════════════════
+#  Projections des produits MF (vérifiées par ajustement des disques de
+#  couverture sur les positions des antennes, erreur ≈ 1 km) :
+#    - mosaïque  (projection type 3) : Mercator, échelle vraie à |latitude de référence| (17°)
+#    - station   (projection type 4) : projection locale centrée sur le radar (stéréographique)
+#  Leaflet étire une ImageOverlay linéairement en Web Mercator : on rééchantillonne
+#  donc dans une grille régulière en Web Mercator entre les bornes renvoyées.
+
+R_EARTH = 6371229.0
+RADAR_CLEVS = np.array([8, 16, 20, 24, 28, 32, 36, 40, 44, 48, 99])
+RADAR_RGB   = np.array([(58,166,255),(30,111,255),(27,209,27),(19,165,19),(10,122,10),
+                        (255,240,0),(255,176,0),(255,90,0),(255,0,0),(176,0,0)], dtype=np.uint8)
+
+def _merc_y(lat):  return np.log(np.tan(np.pi/4 + np.radians(lat)/2))
+def _merc_lat(y):  return np.degrees(2*np.arctan(np.exp(y)) - np.pi/2)
+
+
+def _projection(r):
+    """Renvoie (forward, inverse) :
+       forward(lat, lon)  -> (row, col) continus dans la grille source
+       inverse(row, col)  -> (lat, lon)"""
+    dx, dy = r['pixel_m']
+    if r.get('offsets_m') is None:
+        # ── Mosaïque : Mercator, échelle vraie à |ref_lat|
+        k  = np.cos(np.radians(abs(r['ref_lat'])))
+        y0 = _merc_y(r['corner_lat']); lon0 = r['corner_lon']
+        def fwd(lat, lon):
+            return ((y0 - _merc_y(lat)) * R_EARTH * k / dy,
+                    np.radians(lon - lon0) * R_EARTH * k / dx)
+        def inv(row, col):
+            return (_merc_lat(y0 - row * dy / (R_EARTH * k)),
+                    lon0 + np.degrees(col * dx / (R_EARTH * k)))
+    else:
+        # ── Station : stéréographique centrée sur le radar
+        (la0, lo0), (dN, dW) = r['radars'][0], r['offsets_m']
+        p0, l0 = np.radians(la0), np.radians(lo0)
+        def fwd(lat, lon):
+            p, l = np.radians(lat), np.radians(lon)
+            kk = 2 / (1 + np.sin(p0)*np.sin(p) + np.cos(p0)*np.cos(p)*np.cos(l - l0))
+            x = R_EARTH * kk * np.cos(p) * np.sin(l - l0)
+            y = R_EARTH * kk * (np.cos(p0)*np.sin(p) - np.sin(p0)*np.cos(p)*np.cos(l - l0))
+            return (dN - y) / dy, (x + dW) / dx
+        def inv(row, col):
+            x = col * dx - dW; y = dN - row * dy
+            rho = np.hypot(x, y); c = 2 * np.arctan(rho / (2 * R_EARTH))
+            with np.errstate(invalid='ignore', divide='ignore'):
+                lat = np.arcsin(np.cos(c)*np.sin(p0) + np.where(rho > 0, y*np.sin(c)*np.cos(p0)/rho, 0))
+            lon = l0 + np.arctan2(x*np.sin(c), rho*np.cos(p0)*np.cos(c) - y*np.sin(p0)*np.sin(c))
+            return np.degrees(lat), np.degrees(lon)
+    return fwd, inv
+
+
+def make_overlay(r, dbz, alpha=210):
+    """Grille dBZ décodée -> (image RGBA, bbox) géoréférencées pour L.imageOverlay."""
+    ny, nx = dbz.shape
+    fwd, inv = _projection(r)
+
+    # Bornes : contour de la grille source reprojeté
+    t = np.linspace(0, 1, 200)
+    er = np.concatenate([t*ny, t*ny, np.zeros_like(t), np.full_like(t, ny)])
+    ec = np.concatenate([np.zeros_like(t), np.full_like(t, nx), t*nx, t*nx])
+    blat, blon = inv(er, ec)
+    north, south = float(np.max(blat)), float(np.min(blat))
+    west,  east  = float(np.min(blon)), float(np.max(blon))
+
+    # Grille cible régulière en Web Mercator (même résolution que la source)
+    H, W = ny, nx
+    lon_t = west + (np.arange(W) + 0.5) * (east - west) / W
+    yN, yS = _merc_y(north), _merc_y(south)
+    lat_t = _merc_lat(yN - (np.arange(H) + 0.5) * (yN - yS) / H)
+    LON, LAT = np.meshgrid(lon_t, lat_t)
+
+    rr, cc = fwd(LAT, LON)
+    ri, ci = np.floor(rr).astype(int), np.floor(cc).astype(int)
+    ok = (ri >= 0) & (ri < ny) & (ci >= 0) & (ci < nx)
+    samp = np.full((H, W), np.nan)
+    samp[ok] = dbz[ri[ok], ci[ok]]
+
+    rgba = np.zeros((H, W, 4), dtype=np.uint8)
+    ech = np.isfinite(samp)
+    idx = np.clip(np.digitize(samp[ech], RADAR_CLEVS) - 1, 0, len(RADAR_RGB) - 1)
+    rgba[ech, :3] = RADAR_RGB[idx]
+    rgba[ech, 3] = alpha
+    bbox = {"south": round(south, 5), "north": round(north, 5),
+            "west":  round(west, 5),  "east":  round(east, 5)}
+    return rgba, bbox
