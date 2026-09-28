@@ -7,6 +7,7 @@ import os, sys, gzip, io, json, tempfile, datetime as dt
 import numpy as np
 import requests
 from PIL import Image
+from storage_cleanup import cleanup_storage
 import mf_radar
 
 # Ancienne base (v1)
@@ -163,6 +164,11 @@ def main():
         except Exception as e:
             log(f"ERROR {src['key']}: {e!r}")
             rc = 1
+        try:
+            cleanup_storage(SUPABASE_URL, SUPABASE_KEY, SUPABASE_BUCKET,
+                            [s["key"].lower() for s in SOURCES], log=log)
+        except Exception as e:
+            log(f"WARN cleanup: {e!r}")
     sys.exit(rc)
 
 
