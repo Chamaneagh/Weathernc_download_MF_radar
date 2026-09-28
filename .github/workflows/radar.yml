@@ -32,3 +32,11 @@ jobs:
           SUPABASE_KEY:    ${{ secrets.SUPABASE_KEY }}
           SUPABASE_BUCKET: radar
         run: python worker.py
+        
+      - name: Lame d'eau — cumuls de pluie 1h/6h/24h
+        if: always()
+        env:
+          MF_API_KEY:   ${{ secrets.MF_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python lame_worker.py

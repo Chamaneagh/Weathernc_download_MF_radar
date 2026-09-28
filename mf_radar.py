@@ -220,9 +220,10 @@ def _projection(r):
     return fwd, inv
 
 
-def make_overlay(r, dbz, alpha=210):
-    """Grille dBZ décodée -> (image RGBA, bbox) géoréférencées pour L.imageOverlay."""
-    ny, nx = dbz.shape
+def resample_webmercator(r, grid):
+    """Rééchantillonne une grille source (ny, nx) dans une grille régulière en Web Mercator.
+    Renvoie (grille_cible, bbox). Les pixels hors de la grille source valent NaN."""
+    ny, nx = grid.shape
     fwd, inv = _projection(r)
 
     # Bornes : contour de la grille source reprojeté
@@ -243,14 +244,80 @@ def make_overlay(r, dbz, alpha=210):
     rr, cc = fwd(LAT, LON)
     ri, ci = np.floor(rr).astype(int), np.floor(cc).astype(int)
     ok = (ri >= 0) & (ri < ny) & (ci >= 0) & (ci < nx)
-    samp = np.full((H, W), np.nan)
-    samp[ok] = dbz[ri[ok], ci[ok]]
+    out = np.full((H, W), np.nan)
+    out[ok] = grid[ri[ok], ci[ok]]
+    bbox = {"south": round(south, 5), "north": round(north, 5),
+            "west":  round(west, 5),  "east":  round(east, 5)}
+    return out, bbox
 
+
+def resample_webmercator(r, grid):
+    """Rééchantillonne une grille source (ny, nx) dans une grille régulière en Web Mercator.
+    Renvoie (grille float avec NaN hors source, bbox) — la bbox est celle à donner à Leaflet."""
+    ny, nx = grid.shape
+    fwd, inv = _projection(r)
+    t = np.linspace(0, 1, 200)
+    er = np.concatenate([t*ny, t*ny, np.zeros_like(t), np.full_like(t, ny)])
+    ec = np.concatenate([np.zeros_like(t), np.full_like(t, nx), t*nx, t*nx])
+    blat, blon = inv(er, ec)
+    north, south = float(np.max(blat)), float(np.min(blat))
+    west,  east  = float(np.min(blon)), float(np.max(blon))
+    H, W = ny, nx
+    lon_t = west + (np.arange(W) + 0.5) * (east - west) / W
+    yN, yS = _merc_y(north), _merc_y(south)
+    lat_t = _merc_lat(yN - (np.arange(H) + 0.5) * (yN - yS) / H)
+    LON, LAT = np.meshgrid(lon_t, lat_t)
+    rr, cc = fwd(LAT, LON)
+    ri, ci = np.floor(rr).astype(int), np.floor(cc).astype(int)
+    ok = (ri >= 0) & (ri < ny) & (ci >= 0) & (ci < nx)
+    samp = np.full((H, W), np.nan)
+    samp[ok] = grid[ri[ok], ci[ok]]
+    bbox = {"south": round(south, 5), "north": round(north, 5),
+            "west":  round(west, 5),  "east":  round(east, 5)}
+    return samp, bbox
+
+
+def make_overlay(r, dbz, alpha=210):
+    """Grille dBZ décodée -> (image RGBA, bbox) géoréférencées pour L.imageOverlay."""
+    samp, bbox = resample_webmercator(r, dbz)
+    H, W = samp.shape
     rgba = np.zeros((H, W, 4), dtype=np.uint8)
     ech = np.isfinite(samp)
     idx = np.clip(np.digitize(samp[ech], RADAR_CLEVS) - 1, 0, len(RADAR_RGB) - 1)
     rgba[ech, :3] = RADAR_RGB[idx]
     rgba[ech, 3] = alpha
-    bbox = {"south": round(south, 5), "north": round(north, 5),
-            "west":  round(west, 5),  "east":  round(east, 5)}
     return rgba, bbox
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  LAME D'EAU (mosaïque NC 1 km, cumul 5 min, BUFR IPNC21)
+# ════════════════════════════════════════════════════════════════════════
+LAME_NODATA = 65535      # pixel hors couverture radar
+
+def decode_lame(path, tables_dir=None):
+    """Décode un fichier lame d'eau 5 min.
+    Renvoie dict : observed_at (fin du créneau, UTC), grid (ny,nx) uint16 en 1/100 mm
+    (LAME_NODATA hors couverture), period_min, geom (dict utilisable par resample_webmercator)."""
+    ns = _load_engine()
+    here = os.path.dirname(os.path.abspath(__file__))
+    tables_dir = tables_dir or os.path.join(here, 'mflib', 'tables')
+    ns.update({'DIR_PATH': os.path.dirname(os.path.abspath(path)) or '.',
+               'FILE_NAME': os.path.basename(path),
+               'DIR_PATH_TABLE': os.path.abspath(tables_dir), 'affiche_descriptors': False,
+               'FIC_TAB_B': 'bufrtabb_{master}.csv', 'FIC_TAB_D': 'bufrtabd_{master}.csv',
+               'FIC_LOCAL_TAB_B': 'localtabb_{center}_{local}.csv',
+               'FIC_LOCAL_TAB_D': 'localtabd_{center}_{local}.csv'})
+    with contextlib.redirect_stdout(io.StringIO()):
+        ns['deco_bufr']()
+    d = ns['datas_messages'][0]
+    first = lambda k: d[k][0]
+    nx, ny = int(first('Number of pixels per row')), int(first('Number of pixels per column'))
+    pv = np.array(d['Pixel value (16 bits)'][-nx*ny:], dtype=np.uint32)
+    grid = pv.reshape((nx, ny), order='F').T.astype(np.uint16)
+    obs = _dt.datetime(int(first('Year')), int(first('Month')), int(first('Day')),
+                       int(first('Hour')), int(first('Minute')), tzinfo=_dt.timezone.utc)
+    per = d.get('Time period or displacement', [-5, 0])
+    geom = {'offsets_m': None, 'ref_lat': first('Latitude de reference'),
+            'corner_lat': d['Latitude (high accuracy)'][0], 'corner_lon': d['Longitude (high accuracy)'][0],
+            'pixel_m': (first('Pixel size on horizontal - 1'), first('Pixel size on horizontal - 2'))}
+    return {'observed_at': obs, 'grid': grid, 'period_min': int(abs(per[0] - per[-1])), 'geom': geom}
