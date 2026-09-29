@@ -32,9 +32,9 @@ COLORS = ["#c6ecff", "#8fd3ff", "#4aa8ff", "#1f6fe0", "#20b04a", "#8fd13f",
           "#f5e642", "#f7a531", "#ef5b28", "#d11c3c", "#9b1ea8"]
 SCALE_MM = [1, 2, 5, 10, 15, 20, 30, 50, 75, 100, 150]
 THRESHOLDS = {p: SCALE_MM for p in PERIODS}
-# Opacité croissante avec l'intensité : les faibles cumuls (bleus) laissent voir la carte,
-# les fortes pluies sont opaques.            1   2    5    10   15   20   30   50   75  100  150 mm
-ALPHAS = [110, 130, 150, 175, 200, 220, 240, 250, 255, 255, 255]
+# Opacité croissante avec l'intensité, linéaire par classe : 30 % à 1 mm -> 100 % à 150 mm et plus.
+# Les faibles cumuls laissent voir la carte, les fortes pluies sont opaques.
+ALPHAS = [round(255 * (0.30 + 0.70 * i / (len(SCALE_MM) - 1))) for i in range(len(SCALE_MM))]
 NOCOV_RGBA = (60, 70, 80, 90)          # zone hors couverture radar : gris translucide
 
 
