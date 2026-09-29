@@ -27,14 +27,11 @@ NODATA     = mf_radar.LAME_NODATA
 STEP_MIN   = 5
 PERIODS    = {"1h": 60, "6h": 360, "24h": 1440}
 
-# Palette commune (du plus faible au plus fort) et seuils en mm propres à chaque période
+# Échelle unique pour les trois périodes (mm) : rien n'est représenté sous 1 mm
 COLORS = ["#c6ecff", "#8fd3ff", "#4aa8ff", "#1f6fe0", "#20b04a", "#8fd13f",
           "#f5e642", "#f7a531", "#ef5b28", "#d11c3c", "#9b1ea8"]
-THRESHOLDS = {
-    "1h":  [0.2, 0.5, 1, 2, 4, 6, 10, 15, 20, 30, 50],
-    "6h":  [0.5, 1, 2, 5, 10, 15, 20, 30, 50, 75, 100],
-    "24h": [1, 2, 5, 10, 20, 30, 50, 75, 100, 150, 200],
-}
+SCALE_MM = [1, 2, 5, 10, 15, 20, 30, 50, 75, 100, 150]
+THRESHOLDS = {p: SCALE_MM for p in PERIODS}
 RAIN_ALPHA = 220
 NOCOV_RGBA = (60, 70, 80, 90)          # zone hors couverture radar : gris translucide
 
