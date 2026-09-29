@@ -32,7 +32,9 @@ COLORS = ["#c6ecff", "#8fd3ff", "#4aa8ff", "#1f6fe0", "#20b04a", "#8fd13f",
           "#f5e642", "#f7a531", "#ef5b28", "#d11c3c", "#9b1ea8"]
 SCALE_MM = [1, 2, 5, 10, 15, 20, 30, 50, 75, 100, 150]
 THRESHOLDS = {p: SCALE_MM for p in PERIODS}
-RAIN_ALPHA = 220
+# Opacité croissante avec l'intensité : les faibles cumuls (bleus) laissent voir la carte,
+# les fortes pluies sont opaques.            1   2    5    10   15   20   30   50   75  100  150 mm
+ALPHAS = [110, 130, 150, 175, 200, 220, 240, 250, 255, 255, 255]
 NOCOV_RGBA = (60, 70, 80, 90)          # zone hors couverture radar : gris translucide
 
 
@@ -194,9 +196,9 @@ def render(period, acc, cov, geom):
     wet = np.isfinite(samp) & (samp >= thr[0])
     idx = np.clip(np.digitize(samp[wet], thr) - 1, 0, len(COLORS) - 1)
     rgb = np.array([[int(c[i:i+2], 16) for i in (1, 3, 5)] for c in COLORS], np.uint8)
-    rgba[wet, :3] = rgb[idx]; rgba[wet, 3] = RAIN_ALPHA
+    rgba[wet, :3] = rgb[idx]; rgba[wet, 3] = np.array(ALPHAS, np.uint8)[idx]
     b = io.BytesIO(); Image.fromarray(rgba, "RGBA").save(b, "PNG", optimize=True)
-    legend = [{"min": t, "color": c} for t, c in zip(THRESHOLDS[period], COLORS)]
+    legend = [{"min": t, "color": c, "alpha": a} for t, c, a in zip(THRESHOLDS[period], COLORS, ALPHAS)]
     return b.getvalue(), bbox, legend
 
 
